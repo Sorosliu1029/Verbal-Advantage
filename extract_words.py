@@ -62,12 +62,28 @@ def to_paragraphs(lines):
     return paragraphs
 
 
+def closing_paren(text):
+    """Return the index of the ')' closing the first '(' in text, or -1.
+
+    Pronunciations nest parentheses, as in '(vi-SIS-i-t(y)ood)'.
+    """
+    depth = 0
+    for i, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+            if not depth:
+                return i
+    return -1
+
+
 def split_header(text):
     """Split 'ADVOCATE (AD-vuh-kayt) rest...' into (word, pronunciation, rest)."""
-    match = re.match(r"^\s*([^()]+?)\s*\(([^)]*)\)\s*(.*)$", text, re.DOTALL)
-    if not match:
+    start, end = text.find("("), closing_paren(text)
+    if start < 0 or end < 0:
         return clean(text), "", ""
-    return clean(match.group(1)), clean(match.group(2)), match.group(3)
+    return clean(text[:start]), clean(text[start + 1 : end]), text[end + 1 :].lstrip()
 
 
 def parse_entry(level, number, page, header_rest, body_lines):
@@ -75,7 +91,7 @@ def parse_entry(level, number, page, header_rest, body_lines):
     # lines that follow it; join them until the closing parenthesis.
     head = [header_rest] if header_rest.strip() else []
     remaining = list(body_lines)
-    while remaining and ")" not in " ".join(head):
+    while remaining and closing_paren("\n".join(head)) < 0:
         head.append(remaining.pop(0))
         if len(head) > 4:  # no pronunciation found; stop looking
             break
