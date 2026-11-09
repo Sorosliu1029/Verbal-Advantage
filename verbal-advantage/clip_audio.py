@@ -262,14 +262,21 @@ def clip_file(mp3: Path, entries: dict[int, dict], out: Path, cache: Path) -> li
         after = [s for s, e in gaps if s >= t - 0.15]
         return min(after) if after and min(after) - t < MAX_SNAP else t + 0.1
 
-    def pause_before(t: float) -> tuple[float, float] | None:
-        """The pause that leads into the entry Whisper starts at ``t``.
+    def pause_before(i: int, t: float | None = None) -> tuple[float, float] | None:
+        """The pause that leads into the entry (or review quiz) anchored at ``words[i]``.
 
         Entries are separated by the longest pause around them (about two
         seconds), and Whisper's time for the "Word" after it can be off by more
-        than a second either way.
+        than a second either way. The pause must end before the word after
+        "Word" or "Let's" ("N", "review") is spoken, or before the anchor itself
+        when it is the keyword or its spelling. That rules out the pause after
+        "Word N." or after the keyword.
         """
-        near = [g for g in gaps if t - PAUSE_WINDOW[0] <= g[1] <= t + PAUSE_WINDOW[1]]
+        t = words[i]["start"] if t is None else t
+        anchor = norm(words[i]["word"]) in ("word", "lets", "let", "letsreview")
+        latest = (words[i + 1]["start"] if anchor and i + 1 < len(words) else words[i]["start"]) + 0.3
+        near = [g for g in gaps
+                if t - PAUSE_WINDOW[0] <= g[1] <= min(t + PAUSE_WINDOW[1], latest)]
         return max(near, key=lambda g: g[1] - g[0], default=None)
 
     starts = find_starts(words, entries, first)
@@ -282,26 +289,29 @@ def clip_file(mp3: Path, entries: dict[int, dict], out: Path, cache: Path) -> li
         if number not in starts:
             rows.append(row | {"file": None, "warnings": ["keyword not found in transcript"]})
             continue
-        _, begin, warnings = starts[number]
-        later = [starts[n][1] for n in starts if n > number]
+        index, begin, warnings = starts[number]
+        later = [(starts[n][1], starts[n][0]) for n in starts if n > number]
         if later:
-            until = min(later)
+            until, until_index = min(later)
         elif review is not None:
-            until = words[review]["start"]
+            until, until_index = words[review]["start"], review
         else:
             warnings.append("no 'Let's review' found; clip runs to the end of the file")
-            until = words[-1]["end"] + 1
+            until, until_index = words[-1]["end"] + 1, None
         if number + 1 < first + 10 and number + 1 not in starts:
             warnings.append("next keyword not found, so this clip may run into it")
         if hole := transcript_hole(words, begin):
             warnings.append(f"Whisper skipped {hole[0]:.0f}-{hole[1]:.0f}s near the start; "
                             "check this clip")
-        pause = pause_before(begin)
-        start = pause[1] if pause else begin - 0.1
-        if later or review is not None:
+        # When Whisper heard only the spelling, ``begin`` is the end of the sentence
+        # before it, and the entry's pause comes after that.
+        pause = pause_before(index, begin)
+        # Without a pause (the first entry of a file), start just before the "Word".
+        start = pause[1] if pause else max(begin - 0.1, 0.08)
+        if until_index is not None:
             # End where the pause before the next entry begins, so the clip never
             # catches its "Word"; Whisper's end time for the last word can run past it.
-            pause = pause_before(until)
+            pause = pause_before(until_index)
             end = pause[0] if pause and pause[0] > start else until - 0.15
         else:
             end = snap_end(max(w["end"] for w in words if w["end"] <= until + 0.05))
