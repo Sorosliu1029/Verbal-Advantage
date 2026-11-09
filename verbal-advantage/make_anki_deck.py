@@ -9,6 +9,8 @@ Reads the JSONL written by ``extract_words.py`` and writes one ``.apkg`` with a
 subdeck per level (``Verbal Advantage::Level 01`` ...). Each card shows the
 book's pronunciation, definition and discussion next to the LDOCE5++ entry:
 BrE/AmE IPA and audio, senses with Chinese translations, collocations and origin.
+With the clips from ``clip_audio.py``, the back also plays the audiobook's
+discussion of the word.
 
 The LDOCE lookup and rendering come from Anki-Eudic
 (https://github.com/Sorosliu1029/Anki-Eudic). The deck has its own note type and
@@ -18,6 +20,7 @@ Re-importing a rebuilt deck updates the notes in place and keeps review progress
 Usage:
     uv run make_anki_deck.py words.jsonl -o verbal-advantage.apkg
     uv run make_anki_deck.py words.jsonl --ldoce "~/Library/Eudb_en/LDOCE5++ V 1-35.mdx"
+    uv run make_anki_deck.py words.jsonl --audio audio
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import argparse
 import html
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -90,6 +94,7 @@ _CSS = (
 .book-pron { color: #666; font-size: .9em; }
 .book-def { font-weight: 600; margin: .2em 0; }
 .book-disc summary { cursor: pointer; color: #2a6db0; font-size: .9em; }
+.book-audio audio { width: 100%; margin-top: .3em; }
 .book-disc p { margin: .5em 0; }
 .section-title { margin-top: .8em; font-size: .8em; font-weight: 600; color: #2a6db0;
   text-transform: uppercase; letter-spacing: .05em; }
@@ -142,13 +147,31 @@ def _paragraphs(text: str) -> str:
     return "".join(f"<p>{_text(p)}</p>" for p in text.split("\n\n") if p.strip())
 
 
+def load_clips(folder: Path) -> dict[tuple[int, int], Path]:
+    """Map (level, number) to its audiobook clip, from ``clip_audio.py``'s clips.jsonl."""
+    index = folder / "clips.jsonl"
+    if not index.exists():
+        return {}
+    with open(index, encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    return {(r["level"], r["number"]): folder / r["file"] for r in rows if r["file"]}
+
+
+def _player(name: str) -> str:
+    # An <audio> player rather than [sound:], which would autoplay a clip that
+    # runs for minutes every time the answer is shown.
+    return f'<div class="book-audio"><audio controls preload="none" src="{name}"></audio></div>'
+
+
 def build(
     entries: list[dict],
     destination: Path,
     dictionary: LdoceDictionary | None,
     *,
     audio: bool = True,
+    clips: dict[tuple[int, int], Path] | None = None,
 ) -> None:
+    clips = clips or {}
     decks: dict[int, genanki.Deck] = {}
     missing: list[str] = []
     with tempfile.TemporaryDirectory(prefix="verbal-advantage-") as media_dir:
@@ -177,6 +200,14 @@ def build(
                 BookDefinition=_text(item["definition"]),
                 BookDiscussion=_paragraphs(item["content"]),
             )
+            clip = clips.get((item["level"], item["number"]))
+            if clip is not None:
+                # genanki names media after their files, so copy the clip under a
+                # name that can't clash with other decks' media.
+                name = f"verbal-advantage_{clip.name}"
+                media[name] = Path(media_dir, name)
+                shutil.copyfile(clip, media[name])
+                fields["BookDefinition"] += _player(name)
             entry = lookup(dictionary, word) if dictionary is not None else None
             if entry is not None:
                 fields.update({k: v for k, v in render_entry(entry).items() if v})
@@ -204,9 +235,11 @@ def build(
         package.write_to_file(str(destination))
 
     enriched = len(entries) - len(missing) if dictionary is not None else 0
+    clipped = sum((e["level"], e["number"]) in clips for e in entries)
     print(
         f"Wrote {destination}: {len(entries)} notes in {len(decks)} decks, "
-        f"{enriched} with LDOCE content, {len(media)} audio files",
+        f"{enriched} with LDOCE content, {len(media)} audio files "
+        f"({clipped} audiobook clips)",
         file=sys.stderr,
     )
     if missing:
@@ -225,22 +258,28 @@ def main() -> None:
         help="LDOCE5++ .mdx (default: $ANKI_EUDIC_LDOCE or ~/Library/Eudb_en/LDOCE5*.mdx); "
         "audio comes from the .mdd next to it. Pass '' to build without the dictionary.",
     )
+    parser.add_argument(
+        "--audio",
+        default="audio",
+        help="folder written by clip_audio.py (default: audio); skipped if it has no clips.jsonl",
+    )
     args = parser.parse_args()
 
     with open(args.words, encoding="utf-8") as f:
         entries = [json.loads(line) for line in f if line.strip()]
     destination = Path(args.output).expanduser().with_suffix(".apkg")
+    clips = load_clips(Path(args.audio).expanduser())
 
     if not args.ldoce:
         print("No LDOCE5++ dictionary given; building from the book only.", file=sys.stderr)
-        build(entries, destination, None)
+        build(entries, destination, None, clips=clips)
         return
     mdx = Path(args.ldoce).expanduser()
     mdd = mdx.with_suffix(".mdd")
     if not mdd.exists():
         print(f"No {mdd.name} next to the .mdx; building without audio.", file=sys.stderr)
     with LdoceDictionary(mdx, mdd if mdd.exists() else None) as dictionary:
-        build(entries, destination, dictionary, audio=mdd.exists())
+        build(entries, destination, dictionary, audio=mdd.exists(), clips=clips)
 
 
 if __name__ == "__main__":

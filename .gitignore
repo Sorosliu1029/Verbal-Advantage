@@ -2,3 +2,5 @@
 *.mobi
 *.jsonl
 *.apkg
+*.mp3
+audio/
