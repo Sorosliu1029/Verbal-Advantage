@@ -37,6 +37,22 @@ couldn't place cleanly. It needs ffmpeg and an Apple Silicon Mac (it runs
 [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper));
 transcribing all 50 files takes a few hours.
 
+To check the clips, `check_clips.py` transcribes each clip again on its own and
+compares it with the book: does it open with its own "Word N" and spelling, is the
+book's definition and discussion in it, and did nothing from the next keyword or the
+review quiz leak in. It writes `audio/check.jsonl` and prints the clips that fail a
+check (`--sample 5` checks five random clips per level instead of all 500):
+
+```sh
+uv run check_clips.py words.jsonl -a audio
+```
+
+The audiobook sometimes rewords or skips a paragraph of the book, and the narrator
+cross-references other keywords ("word 29 of Level 7"), so listen to a flagged clip
+before treating it as wrong. On the clips as cut now, all 500 open with their own
+"Word N" and none contains the next keyword or the review; the 12 it flags are such
+cases.
+
 ## Build an Anki deck
 
 `make_anki_deck.py` turns `words.jsonl` into an Anki package with one subdeck per
